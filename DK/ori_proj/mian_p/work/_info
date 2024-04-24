@@ -1,0 +1,52 @@
+m255
+K4
+z2
+13
+!s112 1.1
+!i10d 8192
+!i10e 25
+!i10f 100
+cModel Technology
+Z0 d/home/ICer/ic_prjs/mian_p
+vaxi_insert_header
+!s110 1713882068
+!i10b 1
+!s100 F<2o:F?kdJ30GRgXb@XmZ0
+IPATYDdd:GSmLQ^iQ;9lk41
+Z1 VDg1SIo80bB@j0V0VzS_@n1
+R0
+w1713882068
+8/tmp/v2C1AIC/1124/axi_insert_header.v
+F/tmp/v2C1AIC/1124/axi_insert_header.v
+L0 1
+Z2 OL;L;10.7c;67
+r1
+!s85 0
+31
+!s108 1713882068.000000
+!s107 /tmp/v2C1AIC/1124/axi_insert_header.v|
+!s90 -quiet|-lint|/tmp/v2C1AIC/1124/axi_insert_header.v|
+!i113 0
+Z3 o-quiet -lint -L mtiAvm -L mtiRnm -L mtiOvm -L mtiUvm -L mtiUPF -L infact
+Z4 tCvgOpt 0
+vtb_top
+!s110 1713882152
+!i10b 1
+!s100 1N0i8L_IejRi9Y^0]o9W02
+I62QEY^bQa;[]H4?ZXg?f]0
+R1
+R0
+w1713882152
+8/tmp/vDSw3R9/29/tb_top.v
+F/tmp/vDSw3R9/29/tb_top.v
+L0 1
+R2
+r1
+!s85 0
+31
+!s108 1713882152.000000
+!s107 /tmp/vDSw3R9/29/tb_top.v|
+!s90 -quiet|-lint|/tmp/vDSw3R9/29/tb_top.v|
+!i113 0
+R3
+R4

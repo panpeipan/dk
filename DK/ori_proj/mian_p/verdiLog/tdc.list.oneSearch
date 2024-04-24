@@ -1,0 +1,6 @@
+./register_slices.v
+./axi_stream_insert_header.v
+./beifen.v
+./axi_insert_header.v
+./tb_register_slices.v
+./tb_top.v

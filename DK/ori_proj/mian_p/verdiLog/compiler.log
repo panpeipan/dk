@@ -1,0 +1,29 @@
+*design* DebussyLib (btIdent Verdi_O-2018.09-SP2)
+Command arguments:
+    +define+verilog
+    -f filelist.f
+        ./tb_register_slices.v
+        ./register_slices.v
+        ./axi_stream_insert_header.v
+        ./axi_insert_header.v
+        ./tb_top.v
+        ./beifen.v
+
+
+*Error* non-constant instance parameter
+"./register_slices.v", 5: 
+
+*Error* non-constant instance parameter
+"./axi_stream_insert_header.v", 4: 
+
+*Error* non-constant instance parameter
+"./axi_insert_header.v", 4: 
+
+*Error* non-constant instance parameter
+"./beifen.v", 4: 
+Highest level modules:
+axi_stream_insert_header
+tb_top
+axi_stream_insertbeifen_header
+
+Total	4 error(s),   0 warning(s)

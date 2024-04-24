@@ -1,0 +1,862 @@
+module axi_stream_insert_header #(
+    parameter DATA_WD = 32,
+    parameter DATA_BYTE_WD = DATA_WD / 8,
+    parameter BYTE_CNT_WD = $clog2(DATA_BYTE_WD)
+) (
+    input                       clk,
+    input                       rst_n,
+    // AXI Stream input original data
+    input                       valid_in,
+    input [DATA_WD-1 : 0]       data_in,
+    input [DATA_BYTE_WD-1 : 0]  keep_in,
+    input                       last_in,
+    output                      ready_in,
+    // AXI Stream output with header inserted
+    output                       valid_out      ,
+    output  [DATA_WD-1 : 0]      data_out       ,
+    output  [DATA_BYTE_WD-1 : 0] keep_out       ,
+    output                       last_out       ,
+    input                        ready_out      ,
+    // The header to be inserted to AXI Stream input
+    input                        valid_insert   ,
+    input [DATA_WD-1 : 0]        data_insert    ,
+    input [DATA_BYTE_WD-1 : 0]   keep_insert    ,
+    input [BYTE_CNT_WD-1 : 0]    byte_insert_cnt,
+    output                       ready_insert
+);
+//----------------------------------------------------//
+// local parameter
+//----------------------------------------------------//
+
+wire w_valid_out ;
+//----------------------------------------------------//
+// reg
+//----------------------------------------------------//
+reg                         r_frame_n                 ;
+reg                         r_insert_data_comb_frame_n;
+
+reg [DATA_WD-1:0]           r_ori_data_comb   ;
+reg [DATA_WD-1:0]           r_ori_data_comb_temp ;
+reg [DATA_BYTE_WD-1:0]      r_ori_first_keep  ;
+reg [DATA_BYTE_WD-1:0]      r_keep_in         ;
+reg [DATA_WD-1:0]           r_data_in_dff     ;
+
+reg [DATA_WD-1:0]           r_data_insert     ;
+reg [DATA_BYTE_WD-1:0]      r_keep_insert     ;
+
+reg                         r_valid_out       ;
+
+reg  [DATA_WD-1 : 0]        r_data_comb       ;
+
+reg                         r_ready_insert    ;
+//keep_out dff
+reg [DATA_BYTE_WD-1:0]      r_ori_keep_comb   ;
+reg [DATA_BYTE_WD-1:0]      r_ori_keep_comb_temp  ;
+reg [DATA_BYTE_WD-1:0]      r_ori_keep_dff    ;
+reg [DATA_BYTE_WD-1:0]      r_insert_keep_dff ;
+reg [DATA_BYTE_WD-1:0]      r_keep_comb       ;
+
+reg [9:0] pipe_cnt ; 
+reg                         r_data_para_done_flag  ; 
+reg                         r_insert_done_flag     ;
+reg                         frame_finish_flag ;
+reg                         r_ori_keep_dff_empty_flag ;
+reg dff_3 ;
+reg [DATA_BYTE_WD-1:0] r_ori_keep_ckc;
+reg r_keep_dff_empty_flag ;
+//----------------------------------------------------//
+// wire
+//----------------------------------------------------//
+wire                       w_valid_in       ;
+wire [DATA_WD-1 : 0]       w_data_in        ;
+wire [DATA_BYTE_WD-1 : 0]  w_keep_in        ;
+wire                       w_last_in        ;
+wire                       w_ready_in       ;
+    
+wire                       w_valid_insert   ;
+wire  [DATA_WD-1 : 0]      w_data_insert    ;
+wire  [DATA_BYTE_WD-1 : 0] w_keep_insert    ;
+wire  [BYTE_CNT_WD-1 : 0]  w_byte_insert_cnt;
+wire                       w_ready_insert   ;
+
+wire                       frame_start_flag ;
+wire                       stop_pipe_line_flag ;
+wire                       w_ori_data_comb_frame_n   ;
+//----------------------------------------------------//
+// main_code
+//----------------------------------------------------//
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin 
+        frame_finish_flag <= 1'b0 ;
+    end  
+    else if (w_last_in&w_valid_in&w_ready_in) begin
+        frame_finish_flag <= 1'b1 ;
+    end 
+    else begin
+        frame_finish_flag <= 1'b0 ;
+    end
+end
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin
+        r_frame_n <= 1'b1 ;
+    end 
+    else if (frame_start_flag) begin
+        r_frame_n <= 1'b0 ;
+    end 
+    else if (frame_finish_flag)begin 
+        r_frame_n <= 1'b1;
+    end  
+    else begin
+        r_frame_n <= r_frame_n ;
+    end
+end 
+
+assign w_ori_data_comb_frame_n = r_frame_n; 
+
+reg [5:0] r_data_out_num;
+reg [5:0] r_data_in_num ;
+reg [5:0] r_store_data_in_num; 
+reg       r_frame_n_dff ;
+reg   r_last_comb,r_ori_last_comb,r_last_dff,r_ori_last_comb_temp; 
+always@(posedge clk or negedge rst_n)begin //TODO
+    if (!rst_n) begin 
+        r_frame_n_dff <= 1'b1; 
+    end  
+    else if  (w_valid_in&&w_ready_in) begin
+        r_frame_n_dff <= r_frame_n ;
+    end
+end 
+always@(posedge clk or negedge rst_n)begin //TODO
+    if (!rst_n) begin 
+        r_insert_data_comb_frame_n <= 1'b1; 
+    end 
+    else if (!r_frame_n_dff||(r_data_out_num<r_data_in_num)) begin
+        r_insert_data_comb_frame_n <= 1'b0 ;
+    end
+    else begin
+        r_insert_data_comb_frame_n <= 1'b1;
+    end
+end   
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        r_data_out_num <= 'd0 ;
+    end 
+    else if (frame_start_flag) begin
+        r_data_out_num <= 'd0 ;
+    end
+    else if (!r_frame_n||!r_insert_data_comb_frame_n)begin 
+        if (w_valid_out&&ready_out) begin
+            r_data_out_num <= r_data_out_num + 6'd1 ;
+        end
+    end 
+    else if (frame_finish_flag) begin
+        r_data_out_num <= 'd0;
+    end
+end 
+
+reg pipe_start,pipe_pop;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        pipe_start <= 1'b0 ;
+    end 
+    else if (r_data_in_num>=6'd1&&w_ready_in&&w_valid_in) begin
+        pipe_start <= 1'b1 ;
+    end 
+    else if (pipe_cnt == 0) begin
+        pipe_start <= 1'b0;
+    end 
+    else begin
+        pipe_start <= pipe_start ;
+    end
+end 
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        pipe_pop <= 1'b0 ;
+    end 
+    else if (pipe_start&&frame_finish_flag) begin
+        pipe_pop <= 1'b1 ;
+    end 
+    else if (r_ori_last_comb&&w_valid_out&&ready_out) begin
+        pipe_pop <= 1'b0 ;
+    end
+    else begin
+        pipe_pop <= pipe_pop ;
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        r_data_in_num <= 'b0;
+    end 
+    else if (frame_start_flag) begin
+        if(w_valid_in&&w_ready_in)begin 
+            r_data_in_num <= 6'b1;
+        end 
+        else begin
+            r_data_in_num <= 6'b0 ;
+        end
+    end 
+    else if (!r_frame_n) begin
+        if(w_valid_in&&w_ready_in)begin 
+            r_data_in_num <= r_data_in_num + 6'd1 ;
+        end 
+    end 
+    else if (frame_finish_flag) begin
+        r_data_in_num <= 6'd0;
+    end
+end 
+// assign r_insert_data_comb_frame_n = (pipe_cnt == 0);
+always@(posedge clk or negedge rst_n )begin 
+    if (!rst_n) begin
+        r_data_insert <= 'b0 ;
+        r_keep_insert <= 'b0 ;
+    end 
+    else if (w_valid_insert&&w_ready_insert) begin
+        r_data_insert <= w_data_insert ;
+        r_keep_insert <= w_keep_insert ;
+    end 
+end  
+
+always @(posedge clk or negedge rst_n) begin 
+    if(!rst_n)begin 
+        r_ori_keep_dff_empty_flag <= 1'b0 ;
+    end  
+    // else if (ready_out&&valid_out&&r_ori_keep_dff_empty_flag) begin
+        // r_ori_keep_dff_empty_flag <= 1'b0;
+    // end 
+    else if (r_ori_keep_dff_empty_flag) begin
+        r_ori_keep_dff_empty_flag <= 1'b0;
+    end 
+    else if (r_ori_last_comb)begin
+        case (r_keep_insert) //TODO 
+            4'b0111: begin
+                if (r_ori_keep_ckc[2]==1'b1) begin
+                    r_ori_keep_dff_empty_flag <= 1'b0 ;
+                end  
+                else begin
+                    r_ori_keep_dff_empty_flag <= 1'b1 ;
+                end
+            end
+            4'b0011: begin
+                if (r_ori_keep_ckc[1]==1'b1) begin
+                    r_ori_keep_dff_empty_flag <= 1'b0;
+                end 
+                else begin
+                    r_ori_keep_dff_empty_flag <= 1'b1 ;
+                end
+            end
+            4'b0001: begin
+                if (r_ori_keep_ckc[0]==1'b1) begin
+                    r_ori_keep_dff_empty_flag <= 1'b0;
+                end 
+                else begin
+                    r_ori_keep_dff_empty_flag <= 1'b1 ;
+                end
+            end
+            default: begin
+                r_ori_keep_dff_empty_flag <= 1'b0 ;
+            end
+        endcase 
+        if (r_ori_keep_ckc==4'b0) begin
+            r_ori_keep_dff_empty_flag <= 1'b1 ;
+        end
+    end 
+    else begin
+        r_ori_keep_dff_empty_flag <= r_ori_keep_dff_empty_flag;
+    end
+end 
+always @(*) begin 
+    if (r_ori_last_comb) begin
+        case (r_ori_first_keep) 
+            4'b1111: begin  
+                if (r_ori_keep_dff[3:0]==4'b0) begin
+                    r_keep_dff_empty_flag  = 1'b1 ;
+                end
+                r_ori_keep_ckc = r_ori_keep_dff ; 
+            end 
+            4'b0111: begin  
+                if (r_ori_keep_dff[3:0]==4'b0) begin
+                    r_keep_dff_empty_flag  = 1'b1 ;
+                end
+                r_ori_keep_ckc = {r_ori_keep_dff[2:0],1'b0}; 
+            end 
+            4'b0011: begin 
+                if (r_ori_keep_dff[3:0]==4'b0) begin
+                    r_keep_dff_empty_flag  = 1'b1 ;
+                end
+                r_ori_keep_ckc = {r_ori_keep_dff[1:0],2'b0}; 
+            end 
+            4'b0001: begin
+                if (r_ori_keep_dff[3:0]==4'b0) begin
+                    r_keep_dff_empty_flag  = 1'b1 ;
+                end
+                r_ori_keep_ckc = {r_ori_keep_dff[0],3'b0}; 
+            end  
+            default:  begin 
+                r_ori_keep_ckc = r_ori_keep_dff ; 
+            end 
+        endcase
+    end 
+    else begin
+        r_keep_dff_empty_flag = 1'b0;
+    end
+end  
+reg pipe_en ;
+reg in_shake;
+reg out_shake;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        pipe_en   <= 1'b0 ; 
+        in_shake  <= 1'b0 ;
+        out_shake <= 1'b0 ;
+    end  
+    else if (pipe_start&&pipe_pop) begin
+        pipe_en <= 1'b1 ;
+        in_shake <= 1'b0 ;
+        out_shake <= 1'b0;
+    end
+    else if (w_ready_in&&w_valid_in&&ready_out&&w_valid_out&&pipe_start) begin 
+        pipe_en <= 1'b1 ;
+        out_shake <= out_shake ;
+        in_shake  <= in_shake  ;
+    end
+    else if (w_ready_in&&w_valid_in&&out_shake) begin
+        pipe_en   <= 1'b0 ;
+        out_shake <= 1'b0;
+        in_shake  <= 1'b1 ;
+    end 
+    else if (ready_out&&w_valid_out&&in_shake) begin
+        pipe_en <= 1'b1 ;
+        in_shake <= 1'b0 ;
+        out_shake <= 1'b1 ;
+    end 
+    else if (w_ready_in&&w_valid_in) begin 
+        if (r_data_in_num<6'd2 && !pipe_start) begin
+            pipe_en <= 1'b1 ;
+            in_shake <= 1'b0 ;
+        end 
+        else if (r_data_in_num == 6'd2 && !pipe_start) begin
+            pipe_en <= 1'b1;
+            in_shake <= 1'b0 ;
+        end 
+        else if (pipe_cnt>=1&&pipe_start&&w_ready_in&&w_valid_in) begin
+            pipe_en <= 1'b1;
+            in_shake <= 1'b0 ;
+        end
+        else begin 
+            pipe_en <= 1'b0;
+            in_shake <= 1'b1 ;
+        end
+    end 
+    else if (ready_out&&w_valid_out) begin
+        if (r_data_in_num<6'd2 && !pipe_start) begin
+            pipe_en <= 1'b1 ;
+            out_shake <= 1'b0;
+        end 
+        else if (pipe_start&&pipe_cnt>3) begin
+            pipe_en <= 1'b1;
+        end 
+        else if (pipe_start&&pipe_cnt == 2) begin
+            pipe_en <= 1'b0;
+        end
+        else begin
+            pipe_en <= 1'b0 ;
+        end
+    end 
+    // else if (pipe_cnt==2&&valid_out&&ready_out) begin
+        // pipe_en <= 1'b0 ;
+        // out_shake <= 1'b1 ;
+        // in_shake <= 1'b0 ;
+    // end
+    else begin
+        pipe_en <= 1'b0;
+    end
+end
+
+reg    seg_finish; 
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        seg_finish <= 1'b0 ;
+    end 
+    else if (r_ori_last_comb&&w_valid_out&&ready_out) begin
+        seg_finish <= 1'b1 ;
+    end 
+    else if (w_valid_out && ready_out) begin
+        seg_finish <= 1'b0 ;
+    end
+end
+always@(posedge clk or negedge rst_n)begin 
+ if (!rst_n) begin 
+        r_ori_data_comb_temp <= 'd0 ;
+        r_ori_last_comb_temp <= 'd0 ;
+        r_ori_keep_comb_temp <= 'd0;
+    end  
+    else if (pipe_en&&~stop_pipe_line_flag&&pipe_start)begin  
+        r_ori_last_comb_temp <= r_ori_last_comb ;
+        r_ori_data_comb_temp <= r_ori_data_comb;
+        r_ori_keep_comb_temp <= r_ori_keep_comb;
+    end 
+end   
+reg  r_pre_last ;
+//TODO 最后的KEEPOUT需要考虑 
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin 
+        r_data_comb <= 'd0 ;
+        r_keep_comb <= 'b0 ;
+        r_insert_done_flag <= 1'b0 ;
+        r_last_comb    <= 'b0 ;
+        r_pre_last <= 1'b0;
+    end  
+    else if (pipe_en&&~stop_pipe_line_flag&&pipe_start)begin  
+    // else if (pipe_en&&~stop_pipe_line_flag&&~r_insert_data_comb_frame_n)begin  
+        if (~r_insert_done_flag) begin   //TODO 
+        // if ((~r_insert_done_flag)||(last_out&&valid_out&&ready_out)) begin   //TODO 
+            case (r_keep_insert) 
+               4'b1111: begin 
+                   if (!pipe_start) begin
+                       r_last_comb <= 1'b0 ;
+                       r_data_comb <= r_data_insert ; 
+                       r_keep_comb <= r_keep_insert ; 
+                   end 
+                   else begin
+                       r_data_comb <= r_ori_data_comb ;
+                       r_keep_comb <= r_ori_keep_comb ; 
+                       r_last_comb <= r_ori_last_comb ; 
+                   end
+               end 
+               4'b0111: begin  
+                  if(!pipe_start)begin
+                       r_last_comb <= 1'b0 ;
+                       r_data_comb <= {r_data_insert[23:0],r_ori_data_comb[31:24]};
+                       r_keep_comb <= {r_keep_insert[2:0] ,r_ori_keep_comb[3]}; 
+                  end  
+                  else begin
+                       r_data_comb <= {r_data_insert[23:0],r_ori_data_comb[31:24]} ;
+                       r_keep_comb <= {r_keep_insert[2:0],r_ori_keep_comb[3]} ; 
+                       r_last_comb <=  1'b0 ; 
+                  end
+               end 
+               4'b0011: begin 
+                  if(!pipe_start)begin
+                      r_last_comb <= 1'b0 ;
+                      r_data_comb <= {r_data_insert[15:0],r_ori_data_comb[31:16]};
+                      r_keep_comb <= {r_keep_insert[1:0] ,r_ori_keep_comb[3:2]};
+                  end  
+                  else begin
+                      r_data_comb <= {r_data_insert[15:0],r_ori_data_comb[31:16]} ;
+                      r_keep_comb <= {r_keep_insert[1:0],r_ori_keep_comb[3:2]} ; 
+                      r_last_comb <=  1'b0 ; 
+                  end                end 
+               4'b0001:  begin 
+                  if(!pipe_start)begin
+                      r_last_comb <= 1'b0 ;
+                      r_data_comb <= {r_data_insert[7:0],r_ori_data_comb[31:8]};
+                      r_keep_comb <= {r_keep_insert[0] ,r_ori_keep_comb[3:1]}; 
+                  end  
+                  else begin
+                      r_data_comb <= {r_data_insert[7:0],r_ori_data_comb[31:8]} ;
+                      r_keep_comb <= {r_keep_insert[0],r_ori_keep_comb[3:1]} ; 
+                      r_last_comb <=  1'b0 ; 
+                  end 
+               end 
+               default: begin 
+                   r_last_comb <= 1'b0 ;
+                   r_data_comb <= r_data_insert ;
+                   r_keep_comb <= r_keep_insert ; 
+               end 
+            endcase           
+            r_insert_done_flag <= 1'b1 ;
+            r_pre_last <=1'b0;
+        end 
+        else begin
+            case (r_keep_insert) 
+               4'b1111: begin 
+                   r_last_comb <= r_ori_last_comb_temp;
+                   r_data_comb <= r_ori_data_comb_temp; 
+                   r_keep_comb <= r_ori_keep_comb_temp; 
+                   if (r_ori_keep_comb[0] == 1'b0) begin
+                       r_pre_last <= 1'b1;
+                   end 
+                   else begin
+                       r_pre_last <= 1'b0;
+                   end
+               end 
+               4'b0111: begin 
+                 if (r_ori_last_comb_temp) begin
+                     r_last_comb <= r_ori_last_comb_temp ;
+                     r_data_comb <= {r_ori_data_comb_temp[23:0],{8'hfe}};
+                     r_keep_comb <= {r_ori_keep_comb_temp[2:0] ,1'b0};
+                     r_pre_last  <=1'b0;
+                 end 
+                 else begin
+                     r_last_comb <= r_ori_last_comb_temp ;
+                     r_data_comb <= {r_ori_data_comb_temp[23:0],r_ori_data_comb[31:24]};
+                     r_keep_comb <= {r_ori_keep_comb_temp[2:0] ,r_ori_keep_comb[3]};
+                     if (r_ori_keep_comb[0] == 1'b0) begin
+                         r_pre_last <= 1'b1;
+                     end 
+                     else begin
+                         r_pre_last <= 1'b0;
+                     end
+                 end
+               end 
+               4'b0011:  begin
+                   if (r_ori_last_comb_temp) begin
+                       r_last_comb <= r_ori_last_comb_temp ;
+                       r_data_comb <= {r_ori_data_comb_temp[15:0],{2{8'hfe}}};
+                       r_keep_comb <= {r_ori_keep_comb_temp[1:0] ,2'b0};   
+                       r_pre_last  <=1'b0;
+                   end 
+                   else begin
+                       r_last_comb <= r_ori_last_comb_temp ;
+                       r_data_comb <= {r_ori_data_comb_temp[15:0],r_ori_data_comb[31:16]};
+                       r_keep_comb <= {r_ori_keep_comb_temp[1:0] ,r_ori_keep_comb[3:2]};   
+                       if (r_ori_keep_comb[0] == 1'b0) begin
+                           r_pre_last <= 1'b1;
+                       end 
+                       else begin
+                           r_pre_last <=1'b0;
+                       end
+                   end
+               end 
+               4'b0001:  begin 
+                   if (r_ori_last_comb_temp) begin
+                       r_last_comb <= r_ori_last_comb_temp ;
+                       r_data_comb <= {r_ori_data_comb_temp[7:0],{3{8'hfe}}};
+                       r_keep_comb <= {r_ori_keep_comb_temp[0] ,3'b0};
+                       r_pre_last  <=1'b0;
+                   end 
+                   else begin
+                       r_last_comb <= r_ori_last_comb_temp ;
+                       r_data_comb <= {r_ori_data_comb_temp[7:0],r_ori_data_comb[31:8]};
+                       r_keep_comb <= {r_ori_keep_comb_temp[0] ,r_ori_keep_comb[3:1]};   
+                       if (r_ori_keep_comb[0] == 1'b0) begin
+                           r_pre_last <= 1'b1;
+                       end 
+                       else begin
+                           r_pre_last <= 1'b0 ;
+                       end
+                   end
+               end
+               default:  begin
+                   r_last_comb <= r_ori_last_comb_temp ;
+                   r_data_comb <= r_ori_data_comb_temp ; 
+                   r_keep_comb <= r_ori_keep_comb_temp ; 
+               end 
+            endcase 
+            if (r_ori_last_comb_temp) begin
+                r_insert_done_flag <= 1'b0 ;
+            end
+        end 
+    end 
+    // else if (last_out&&valid_out&&ready_out) begin
+        // r_insert_done_flag <= 1'b0 ;
+    // end 
+end  
+reg r_pre_last_work ;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        r_pre_last_work <= 1'b0 ;
+    end 
+    else if (r_pre_last) begin
+        r_pre_last_work <= 1'b1 ;
+    end 
+    else if (w_valid_out&&ready_out)begin
+        r_pre_last_work <= 1'b0 ;
+    end 
+    else begin
+        r_pre_last_work <= r_pre_last_work;
+    end
+end
+
+
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin 
+        r_valid_out <= 1'b0 ; 
+        dff_3 <= 1'b1 ;
+    end  
+    else if (pipe_en&&pipe_start&&!stop_pipe_line_flag) begin
+        r_valid_out <= 1'b1 ;
+    end 
+    else if (ready_out&&w_valid_out) begin
+        r_valid_out <= 1'b0 ;
+    end 
+    else if (pipe_en&&~stop_pipe_line_flag&&~r_insert_data_comb_frame_n)begin  
+        r_valid_out <= 1'b1 ;
+    end 
+    else begin 
+        r_valid_out <= r_valid_out ;
+    end 
+end
+
+reg r_ori_first_keep_change_flag ;
+reg [DATA_BYTE_WD-1:0] r_ori_keep ;
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin 
+        r_ori_first_keep <= 'b0 ;
+        r_ori_first_keep_change_flag <= 1'b0; 
+        r_keep_in <= 1'b0 ;
+    end  
+    else if (w_valid_out&&ready_out&&r_ori_last_comb&&r_ori_first_keep_change_flag) begin
+        r_ori_first_keep <= r_keep_in;
+        r_ori_first_keep_change_flag <= 1'b0 ;
+    end
+    else if (frame_start_flag&&r_frame_n&&r_insert_data_comb_frame_n) begin 
+        r_ori_first_keep <= w_keep_in ;
+    end 
+    else if (frame_start_flag) begin
+        r_keep_in <= w_keep_in ;
+        r_ori_first_keep_change_flag <= 1'b1; 
+    end
+end 
+
+reg     r_ori_keep_dff0;
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin 
+        r_ori_keep_dff0  <= 'b0 ;
+    end  
+    else if (w_valid_in&&w_ready_in) begin
+        r_ori_keep_dff0  <= w_keep_in ;
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        r_ready_insert <= 1'b0 ;
+    end 
+    else if (frame_start_flag) begin
+        r_ready_insert <= 1'b1 ;
+    end 
+    else begin
+        r_ready_insert <= 1'b0 ;
+    end
+end
+reg      r_ready_in ;
+//TODO 如果源数据不有效，需要反压流水线
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin 
+        r_data_para_done_flag <= 1'b0 ;
+    end  
+    else if (frame_start_flag) begin
+        r_data_para_done_flag <= 1'b0 ;
+    end 
+    else if (~r_frame_n) begin
+        r_data_para_done_flag <= 1'b1 ;
+    end
+end  
+always@(posedge clk or negedge rst_n)begin 
+    if (!rst_n) begin 
+        r_ori_data_comb <= 'b0 ; 
+        r_ori_keep_comb <= 'd0 ;
+        r_ori_last_comb <= 'b0 ;
+    end 
+    // else if (r_ori_keep_dff_empty_flag) begin
+        // r_ori_data_comb <= 'd0;
+        // r_ori_keep_comb <= 'd0;
+    // end
+    // else if (w_valid_in&&w_ready_in && ~stop_pipe_line_flag&&pipe_cnt==4'd0) begin 
+        // r_ori_data_comb <= 'd0 ;
+        // r_ori_keep_comb <= 'd0 ;
+    // end 
+    else if (!stop_pipe_line_flag&&pipe_en&&r_ori_last_comb) begin
+        r_ori_data_comb <= r_ori_data_comb ;
+        r_ori_keep_comb <= r_ori_keep_comb ; 
+        r_ori_last_comb <= r_ori_last_comb ;
+    end
+    else if ((!r_ori_last_comb_temp&&pipe_en&& ~stop_pipe_line_flag )||(!stop_pipe_line_flag&&pipe_en&&!pipe_start)||(last_out&&w_valid_in&&w_ready_in&&ready_out&&w_valid_out)||(r_ori_last_comb_temp&&w_valid_in&&w_ready_in)) begin
+        case (r_ori_first_keep) 
+            4'b1111: begin  
+               r_ori_data_comb <= r_data_in_dff ;
+               r_ori_keep_comb <= r_ori_keep_dff ; 
+               r_ori_last_comb <= r_last_dff  ;
+            end 
+            4'b0111: begin  
+                if (r_last_dff) begin  
+                   r_ori_data_comb <= {r_data_in_dff[23:0],{8'hff}};
+                   r_ori_keep_comb <= {r_ori_keep_dff[2:0],1'b0}; 
+                   r_ori_last_comb <= r_last_dff  ;
+                end 
+                else begin
+                    r_ori_data_comb <= {r_data_in_dff[23:0],w_data_in[31:24]};
+                    r_ori_keep_comb <= {r_ori_keep_dff[2:0],w_keep_in[3]}; 
+                    r_ori_last_comb <= r_last_dff  ;
+                end 
+           end 
+           4'b0011: begin 
+                if (r_last_dff) begin
+                    r_ori_data_comb <= {r_data_in_dff[15:0],{2{8'hff}}};
+                    r_ori_keep_comb <= {r_ori_keep_dff[1:0],2'b0}; 
+                    r_ori_last_comb <= r_last_dff  ;
+                end 
+                else begin
+                    r_ori_data_comb <= {r_data_in_dff[15:0],w_data_in[31:16]};
+                    r_ori_keep_comb <= {r_ori_keep_dff[1:0],w_keep_in[3:2]}; 
+                    r_ori_last_comb <= r_last_dff  ;
+                end
+            end 
+            4'b0001: begin
+                if (r_last_dff) begin
+                    r_ori_data_comb <= {r_data_in_dff[7:0],{3{8'hff}}};
+                    r_ori_keep_comb <= {r_ori_keep_dff[0],3'b0}; 
+                    r_ori_last_comb <= r_last_dff  ;
+                end 
+                else begin
+                    r_ori_data_comb <= {r_data_in_dff[7:0],w_data_in[31:8]};
+                    r_ori_keep_comb <= {r_ori_keep_dff[0],w_keep_in[3:1]}; 
+                    r_ori_last_comb <= r_last_dff  ;
+                end
+           end 
+           default:  begin 
+               r_ori_data_comb <= r_data_in_dff;
+               r_ori_keep_comb <= r_ori_keep_dff ; 
+               r_ori_last_comb <= r_last_dff  ;
+           end 
+       endcase  
+    end
+end 
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        r_data_in_dff   <= 'd0 ;
+        r_ori_keep_dff  <= 'b0 ;
+        r_last_dff      <= 'd0 ;
+    end 
+    else if (w_valid_in&w_ready_in) begin
+        r_data_in_dff   <= w_data_in ;
+        r_ori_keep_dff  <= w_keep_in ; 
+        r_last_dff      <= w_last_in ;
+    end 
+    else if ((pipe_en&& ~stop_pipe_line_flag )||(!stop_pipe_line_flag&&pipe_en&&!pipe_start)) begin
+        r_last_dff      <= 1'b0 ;
+    end
+end
+
+reg pipe_cnt_en ;
+reg pipe_cnt_en_dff0;
+reg pipe_cnt_en_dff1;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        pipe_cnt_en <= 1'b0;
+        pipe_cnt_en_dff0<=1'b0;
+        pipe_cnt_en_dff1<=1'b0;
+    end 
+    else if (w_valid_in && w_ready_in) begin
+        pipe_cnt_en <= 1'b1 ;
+        pipe_cnt_en_dff0<=pipe_cnt_en;
+        pipe_cnt_en_dff1<=pipe_cnt_en_dff0;
+    end 
+    else if (pipe_en&&!stop_pipe_line_flag) begin
+        pipe_cnt_en <= 1'b0 ;
+        pipe_cnt_en_dff0<=pipe_cnt_en;
+        pipe_cnt_en_dff1<=pipe_cnt_en_dff0;
+    end 
+    else begin
+        pipe_cnt_en_dff1 <= 1'b0 ;
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) 
+        pipe_cnt <= 'd0 ;
+    else if (frame_start_flag&&pipe_cnt_en_dff1&&w_valid_out&&ready_out)   
+        pipe_cnt <= pipe_cnt + 10'd1 ;
+    else if (frame_start_flag&&pipe_cnt_en_dff1)  
+        pipe_cnt <= pipe_cnt + 10'd2 ;
+    else if(pipe_cnt_en_dff1&&w_valid_out&&ready_out)
+        pipe_cnt <= pipe_cnt ; 
+    else if (frame_start_flag&&pipe_cnt==0)   
+        pipe_cnt <= pipe_cnt + 10'd1 ;
+    else if(pipe_cnt_en_dff1)
+        pipe_cnt <= pipe_cnt + 10'd1; 
+    else if (w_valid_out&&ready_out) 
+        pipe_cnt <= pipe_cnt - 10'd1 ;
+    else 
+        pipe_cnt <= pipe_cnt ;
+end   
+reg      r_wait_dff ;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        r_ready_in <= 1'b0;
+    end 
+    else if (frame_start_flag&&r_frame_n) begin
+        r_ready_in <= 1'b1 ;
+    end 
+    else if (!r_frame_n&&r_data_in_num<6'd2) begin
+        r_ready_in <= 1'b1 ;
+    end  
+    // else if (stop_pipe_line_flag) begin
+        // r_ready_in <= 1'b0 ;
+    // end 
+    else if (!r_frame_n&&pipe_en&&!stop_pipe_line_flag) begin
+        r_ready_in <= 1'b1 ;
+    end
+    else if (w_ready_in&&w_valid_in) begin
+        r_ready_in <= 1'b0 ;
+    end  
+    else if (~w_ready_in&&pipe_en&&r_ready_in) begin
+        r_ready_in <= 1'b0 ;
+    end
+    else if (!r_frame_n) begin
+        r_ready_in <= 1'b1 ;
+    end
+    else begin
+        r_ready_in <= r_ready_in ;
+    end
+end
+//----------------------------------------------------//
+// assign
+//----------------------------------------------------//
+register_slices
+#( 
+    .payload_width                          ( DATA_WD ),
+    .forward_register_slices_generate_flag  ( 0  ),
+    .backward_register_slices_generate_flag ( 0  )
+)original_data_channel
+(
+    .i_hclk            (clk     ),
+    .i_hrstn           (rst_n   ),
+    .i_source_valid    (valid_in),
+    .i_source_payload  (data_in ),
+    .i_source_keepin   (keep_in ),
+    .i_source_last     (last_in ),
+    .o_source_ready    (ready_in),
+    .o_dest_valid      (w_valid_in),
+    .o_dest_payload    (w_data_in),
+    .o_dest_keepin     (w_keep_in),
+    .o_dest_last       (w_last_in),
+    .i_dest_ready      (w_ready_in) 
+);  
+assign w_ready_in =   (!stop_pipe_line_flag&&pipe_en&&r_ori_last_comb) ? 1'b0: !stop_pipe_line_flag&&r_ready_in ;
+register_slices
+#( 
+    .payload_width                          (32),
+    .DATA_CNT_WD                            (DATA_BYTE_WD),
+    .forward_register_slices_generate_flag  (0 ),
+    .backward_register_slices_generate_flag (0 )
+)header_data_channel
+(
+    .i_hclk                (clk             ),
+    .i_hrstn               (rst_n           ),
+    .i_source_valid        (valid_insert    ),
+    .i_source_payload      (data_insert     ),
+    .i_source_keepin       (keep_insert     ),
+    .i_source_last         (  ) ,
+    .i_source_cnt          (byte_insert_cnt ),
+    .o_source_ready        (ready_insert    ),
+    .o_dest_valid          (w_valid_insert  ),
+    .o_dest_payload        (w_data_insert   ),
+    .o_dest_keepin         (w_keep_insert   ),
+    .o_dest_last           (  ) , 
+    .o_dest_cnt            (w_byte_insert_cnt),
+    .i_dest_ready          (w_ready_insert  ) 
+); 
+assign w_valid_out = r_valid_out ;
+assign w_ready_insert = r_ready_insert ;
+assign valid_out = w_valid_out && !r_pre_last_work;
+assign data_out  = r_data_comb ;
+assign keep_out  = r_keep_comb ;
+assign last_out  = r_last_comb || r_pre_last; 
+assign frame_start_flag  = (w_valid_insert&&w_valid_in&&(frame_finish_flag||r_frame_n));
+assign stop_pipe_line_flag = ~ready_out;
+
+endmodule 
